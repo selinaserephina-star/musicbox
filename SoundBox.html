@@ -59,6 +59,8 @@
   .progrow{display:flex;align-items:center;gap:8px;margin:5px 0;font-size:12px;flex-wrap:wrap}
   .progrow .pname{min-width:170px;color:var(--text)}
   #thMood{color:var(--warn)}
+  #scriptArea{width:100%;font:12.5px ui-monospace,Menlo,Consolas,monospace;background:#0a0b0f;color:#cdd3f0;border:1px solid var(--line);border-radius:8px;padding:9px;resize:vertical;box-sizing:border-box}
+  #scriptMsg{min-height:16px}
   .viz{width:100%;height:130px;background:#0a0b0f;border:1px solid var(--line);border-radius:8px;display:block}
   .viz2{width:100%;height:56px;background:#0a0b0f;border:1px solid var(--line);border-radius:8px;display:block;margin-top:4px}
   /* timeline / clip board */
@@ -421,6 +423,18 @@
     <div id="thRelated" class="chordrow"></div>
     <div class="muted" style="font-size:11px;margin-top:8px">Progressions — click ▶ to hear, ＋ to drop it in as a chord loop:</div>
     <div id="thProg"></div>
+  </div>
+
+  <!-- ===== SCRIPTLET ===== -->
+  <div class="panel" id="scriptPanel">
+    <div class="seqhead">
+      <h2 style="margin:0">📝 Scriptlet — write patterns as text</h2>
+      <button id="scriptRun" class="primary">▶ Compile to loop</button>
+    </div>
+    <textarea id="scriptArea" rows="3" spellcheck="false" placeholder="[ [C4 +7 +7]*4  A3~ G3 A3:2 ]*3"></textarea>
+    <div class="hint" id="scriptMsg"></div>
+    <div class="hint"><b>Melody</b> → loop on the current Sound: <b>C4 A#3</b> note+octave · <b>+7 / -5</b> semitones from last note · <b>:2</b> beats · <b>~</b> legato · <b>_</b> rest · <b>[ … ]*4</b> repeat.<br>
+    <b>Drums</b> → the beat grid, one rule per line: <code>kick: on 1</code> · <code>hat: every 1/16 @ lfo(1 bar, 30-100)</code> · <code>clap: on 2 4 @ 80</code>. Uses <b>every N</b> (beats or 1/16, 1/8…), <b>on 2 4</b> (beats), <b>@ 70</b> velocity or <b>@ lfo(period, lo-hi, shape)</b>.</div>
   </div>
 
   <!-- ===== LIVE DASHBOARD ===== -->
@@ -928,7 +942,7 @@ function scheduler(){
   }
 }
 function scheduleStep(pat, step, time, tk){
-  for(let d=0; d<DRUMS.length; d++) if(pat.drumGrid[d][step]) drumHit(d, time);
+  for(let d=0; d<DRUMS.length; d++){ const v=pat.drumGrid[d][step]; if(v) drumHit(d, time, (typeof v==='number'&&v<=1)?v:1); }
   const sps=secPerStep();
   for(const lp of pat.loops){
     if(lp.recording) continue;
@@ -1164,24 +1178,24 @@ function buildSeq(){
     row.appendChild(lab);
     for(let s=0;s<STEPS;s++){
       const c=document.createElement('div'); c.className='cell'; c.dataset.step=s; c.dataset.row=r;
-      if(drumGrid[r][s]) c.classList.add('on');
-      c.onclick=()=>{ drumGrid[r][s]=!drumGrid[r][s]; c.classList.toggle('on'); initAudio(); if(drumGrid[r][s])drumHit(r); };
+      const v0=drumGrid[r][s]; if(v0){ c.classList.add('on'); if(typeof v0==='number'&&v0<1) c.style.opacity=(0.4+0.6*v0); }
+      c.onclick=()=>{ drumGrid[r][s]=drumGrid[r][s]?false:1; c.classList.toggle('on', !!drumGrid[r][s]); c.style.opacity=''; initAudio(); if(drumGrid[r][s])drumHit(r); };
       row.appendChild(c);
     }
     seq.appendChild(row);
   });
 }
-function refreshSeq(){ document.querySelectorAll('.cell').forEach(c=>{
-  c.classList.toggle('on', drumGrid[+c.dataset.row][+c.dataset.step]); }); }
+function refreshSeq(){ document.querySelectorAll('.cell').forEach(c=>{ const v=drumGrid[+c.dataset.row][+c.dataset.step];
+  c.classList.toggle('on', !!v); c.style.opacity=(typeof v==='number'&&v>0&&v<1)?(0.4+0.6*v):''; }); }
 buildSeq();
 
 // switch timing resolution (16 <-> 32) and rescale everything so nothing moves in time
 function setResolution(newN){
   if(newN===STEPS || (newN!==16 && newN!==32)) return;
   const oldN=STEPS, expand=newN>oldN;
-  const remapBool=row=>{ const nr=new Array(newN).fill(false);
-    if(expand){ for(let s=0;s<oldN;s++) if(row[s]) nr[s*2]=true; }
-    else { for(let i=0;i<newN;i++) nr[i]=!!(row[i*2]||row[i*2+1]); } return nr; };
+  const remapBool=row=>{ const nr=new Array(newN).fill(false);   // preserves velocity values
+    if(expand){ for(let s=0;s<oldN;s++) if(row[s]) nr[s*2]=row[s]; }
+    else { for(let i=0;i<newN;i++) nr[i]= row[i*2]||row[i*2+1]||false; } return nr; };
   const remapSteps=steps=>{ const oldL=steps.length, newL=expand?oldL*2:Math.round(oldL/2), ns=new Array(newL).fill(null);
     if(expand){ for(let s=0;s<oldL;s++){ const c=steps[s]; if(c) ns[s*2]=c.map(e=>({note:e.note,dur:Math.min(newL,e.dur*2)})); } }
     else { for(let i=0;i<newL;i++){ const m=[...(steps[i*2]||[]),...(steps[i*2+1]||[])]; if(m.length) ns[i]=m.map(e=>({note:e.note,dur:Math.max(1,Math.round(e.dur/2))})); } }
@@ -2182,6 +2196,114 @@ document.getElementById('dRes').oninput=e=>{ initAudio(); setMasterRes(e.target.
 document.getElementById('dDelay').oninput=e=>{ initAudio(); setParam('delay', e.target.value/100); };
 document.getElementById('dDtime').oninput=e=>{ initAudio(); setDelayTime(+e.target.value); };
 document.getElementById('dDfb').oninput=e=>{ initAudio(); setDelayFb(e.target.value/100); };
+
+/* ---------- Scriptlet compiler: text notation -> loop layer ---------- */
+function noteNameToMidi(s){ const m=s.match(/^([A-Ga-g])([#b]?)(-?\d+)$/); if(!m) throw new Error('bad note: '+s);
+  const base={c:0,d:2,e:4,f:5,g:7,a:9,b:11}[m[1].toLowerCase()], acc=m[2]==='#'?1:m[2]==='b'?-1:0;
+  return (parseInt(m[3],10)+1)*12 + base + acc; }   // C4 = 60
+function parseScriptTok(t){
+  let m=t.match(/^_(?::([\d.]+))?$/); if(m) return {rest:true, dur:m[1]?+m[1]:1};
+  m=t.match(/^([A-Ga-g][#b]?-?\d+|[+\-]\d+)(?::([\d.]+))?(~)?$/); if(!m) throw new Error('bad token: "'+t+'"');
+  const p=m[1], dur=m[2]?+m[2]:1, tie=!!m[3];
+  if(p[0]==='+'||p[0]==='-') return {rel:parseInt(p,10), dur, tie};
+  return {midi:noteNameToMidi(p), dur, tie};
+}
+function compileScript(src){
+  const toks=src.replace(/\/\/.*$/gm,'').replace(/\[/g,' [ ').replace(/\]/g,' ] ').trim().split(/\s+/).filter(Boolean);
+  if(!toks.length) throw new Error('empty scriptlet');
+  let i=0, guard=0;
+  function group(){
+    const items=[];
+    while(i<toks.length){
+      if(++guard>100000) throw new Error('unbalanced brackets');
+      const t=toks[i];
+      if(t==='['){ i++; items.push(group()); }
+      else if(t===']'){ i++; let reps=1; const nx=toks[i]; if(nx&&/^[x*]\d+$/.test(nx)){ reps=+nx.slice(1); i++; } return {group:items, reps}; }
+      else { items.push(parseScriptTok(t)); i++; }
+    }
+    return {group:items, reps:1};
+  }
+  const ast=group();
+  const events=[], ctx={beat:0, last:60};
+  (function flat(node){ for(const it of node.group){
+    if(it.group){ for(let r=0;r<it.reps;r++) flat(it); }
+    else if(it.rest){ ctx.beat+=it.dur; }
+    else { const midi = it.rel!=null ? ctx.last+it.rel : it.midi; ctx.last=midi;
+      events.push({beat:ctx.beat, dur:it.dur, midi, tie:it.tie}); ctx.beat+=it.dur; } }
+  })(ast);
+  return events;
+}
+function eventsToSteps(events){
+  const spb=STEPS/4; let maxStep=0;
+  const raw=events.map(e=>({s:Math.round(e.beat*spb), d:Math.max(1,Math.round(e.dur*spb))+(e.tie?1:0), note:e.midi}));
+  raw.forEach(r=>maxStep=Math.max(maxStep, r.s+1));
+  const bars=Math.max(1, Math.ceil(maxStep/STEPS)), steps=new Array(bars*STEPS).fill(null);
+  raw.forEach(r=>{ if(r.s>=0 && r.s<steps.length){ (steps[r.s]||(steps[r.s]=[])).push({note:r.note, dur:Math.min(steps.length,r.d)}); } });
+  return steps;
+}
+/* -- drum scriptlets: rules -> the beat grid, with per-step velocity + LFO -- */
+const DRUMKEYS={kick:0,snare:1,hat:2,openhat:3,clap:4,tom:5,rim:6,perc:7,cowbell:8,shaker:9,ride:10,crash:11,hitom:12,lotom:13,conga:14,snap:15};
+function isDrumScript(src){ return src.split(/[\n;]+/).some(l=>{ const m=l.trim().match(/^([A-Za-z][A-Za-z ]*?)(@[A-Za-z0-9]+)?\s*:/);
+  return m && DRUMKEYS[m[1].trim().toLowerCase().replace(/\s+/g,'')]!=null; }); }
+function evalFrac(s){ const f=(''+s).match(/^(\d+)\/(\d+)$/); return f?(+f[1]/+f[2]):parseFloat(s); }
+function beatsOf(tok){ tok=tok.trim().toLowerCase(); if(tok==='bar')return 4; if(tok==='beat')return 1;
+  const f=tok.match(/^(\d+)\/(\d+)$/); if(f) return 4*(+f[1]/+f[2]);        // 1/16 note = 0.25 beats
+  const n=parseFloat(tok); if(!isNaN(n)) return n; throw new Error('bad rate: '+tok); }
+function lfoShape(name,ph){ ph=((ph%1)+1)%1;
+  if(name==='tri') return ph<.5?2*ph:2-2*ph; if(name==='saw') return ph; if(name==='square') return ph<.5?1:0;
+  return 0.5+0.5*Math.sin(2*Math.PI*ph); }
+function parseVel(spec){
+  if(!spec) return ()=>1; spec=spec.trim();
+  const lf=spec.match(/^lfo\s*\(([^)]*)\)$/i);
+  if(lf){ let periodBars=1, lo=0.3, hi=1, shape='sine';
+    lf[1].split(',').forEach(a=>{ a=a.trim(); let m;
+      if(m=a.match(/^([\d./]+)\s*bars?$/i)) periodBars=evalFrac(m[1])||1;
+      else if(m=a.match(/^(\d+)\s*-\s*(\d+)$/)){ lo=+m[1]/100; hi=+m[2]/100; }
+      else if(/^(sine|tri|saw|square)$/i.test(a)) shape=a.toLowerCase(); });
+    return beat=>lo+(hi-lo)*lfoShape(shape,(beat/4)/periodBars); }
+  const n=parseFloat(spec); if(!isNaN(n)) return ()=>Math.max(0,Math.min(1,n/100));
+  throw new Error('bad velocity: '+spec);
+}
+function compileDrumScript(src){
+  const spb=STEPS/4;
+  const lines=src.split(/[\n;]+/).map(l=>l.replace(/\/\/.*$/,'').trim()).filter(Boolean);
+  let applied=0; const skipped=[];
+  lines.forEach(line=>{
+    const m=line.match(/^([A-Za-z][A-Za-z ]*?)(@[A-Za-z0-9]+)?\s*:\s*(.+)$/);
+    if(!m) throw new Error('bad line: "'+line+'"');
+    const row=DRUMKEYS[m[1].trim().toLowerCase().replace(/\s+/g,'')];
+    if(row==null) throw new Error('unknown drum: '+m[1].trim());
+    if(m[2]){ skipped.push(m[1].trim()+m[2]); return; }               // conditional variant — arrangement-aware later
+    const parts=m[3].split('@'); const placement=parts[0].trim(); const velFn=parseVel(parts.slice(1).join('@'));
+    const stepSet=[]; let pm;
+    if(pm=placement.match(/^on\s+(.+)$/i)){ pm[1].trim().split(/\s+/).forEach(b=>{ const s=Math.round((parseFloat(b)-1)*spb); if(s>=0&&s<STEPS) stepSet.push(s); }); }
+    else if(pm=placement.match(/^every\s+(.+)$/i)){ const iv=beatsOf(pm[1])*spb; if(iv<0.5) throw new Error('rate too fast: '+pm[1]); for(let s=0;s<STEPS;s+=iv) stepSet.push(Math.round(s)); }
+    else throw new Error('rule must start with "on" or "every": '+placement);
+    drumGrid[row].fill(false);
+    stepSet.forEach(s=>{ drumGrid[row][s]=Math.max(0.05,Math.min(1,velFn(s/spb))); });
+    applied++;
+  });
+  refreshSeq(); if(!state.playing) play();
+  let msg='✓ '+applied+' drum track'+(applied!==1?'s':'')+' compiled';
+  if(skipped.length) msg+=' · conditional variants noted for later: '+skipped.join(', ');
+  scriptMsg.style.color='var(--good)'; scriptMsg.textContent=msg; logMonitor(msg);
+}
+const scriptArea=document.getElementById('scriptArea'), scriptMsg=document.getElementById('scriptMsg');
+document.getElementById('scriptRun').onclick=()=>{
+  initAudio();
+  try{
+    const src=scriptArea.value;
+    if(isDrumScript(src)){ compileDrumScript(src); return; }
+    const events=compileScript(src);
+    if(!events.length){ scriptMsg.textContent='No notes found.'; return; }
+    const steps=eventsToSteps(events);
+    loops.push({patchIndex:state.patchIndex, name:PATCHES[state.patchIndex].name+' · script', speed:1, steps});
+    renderLayers(); if(!state.playing) play();
+    scriptMsg.style.color='var(--good)';
+    scriptMsg.textContent='✓ '+events.length+' notes → '+Math.round(steps.length/STEPS)+'-bar loop on '+PATCHES[state.patchIndex].name;
+    logMonitor('✓ Scriptlet compiled: '+events.length+' notes');
+  }catch(err){ scriptMsg.style.color='var(--accent2)'; scriptMsg.textContent='⚠ '+err.message; }
+};
 
 /* ---------- Boot ---------- */
 draw();
