@@ -1,0 +1,8 @@
+# editor / OS junk
+.DS_Store
+Thumbs.db
+*.swp
+
+# exported audio & projects (belong to the user, not the repo)
+*.wav
+*.sbx
