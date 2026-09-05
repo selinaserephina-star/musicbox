@@ -233,8 +233,17 @@
 
       <div class="panel">
         <div class="seqhead">
-          <h2 style="margin:0">🎹 Note Grid <span class="muted" id="noteGridInfo" style="font-size:11px;letter-spacing:0"></span></h2>
-          <button id="clearNotes">Clear notes</button>
+          <div class="row" style="gap:10px">
+            <h2 style="margin:0">🎹 Note Grid</h2>
+            <span class="muted">Part</span>
+            <select id="synthPartSel" title="Which synth part you're editing"></select>
+            <button id="addSynthPart" title="Add another synth part playing over the same beat">＋ Synth part</button>
+          </div>
+          <div class="row">
+            <span class="muted">Sound</span>
+            <select id="synthInst" title="Instrument for this synth part — same notes, new sound"></select>
+            <button id="clearNotes">Clear notes</button>
+          </div>
         </div>
         <div class="seqscroll">
           <div class="steplabels" id="noteStepLabels"></div>
@@ -1160,14 +1169,15 @@ function patchGroup(name){
   if(/lead|saw|hoover|chip|sci-fi|square|pluck|arp|growl|dub/.test(n)) return 'Leads & Synths';
   return 'Other';
 }
-(function buildPatchMenu(){
+function fillPatchSelect(sel){
   const order=['Keys','Guitars','Strings','Mallets & Winds','Bass','Pads','Leads & Synths','Other'];
   const groups={}; PATCHES.forEach((p,i)=>{ const g=patchGroup(p.name); (groups[g]||(groups[g]=[])).push(i); });
   order.forEach(gn=>{ if(!groups[gn]) return;
     const og=document.createElement('optgroup'); og.label=gn;
     groups[gn].forEach(i=>{const o=document.createElement('option');o.value=i;o.textContent=PATCHES[i].name;og.appendChild(o);});
-    patchSel.appendChild(og); });
-})();
+    sel.appendChild(og); });
+}
+fillPatchSelect(patchSel);
 patchSel.onchange=()=>{ state.patchIndex=+patchSel.value; };
 
 // step labels
@@ -1313,6 +1323,10 @@ function renderLayers(){
     const barsN=Math.max(1,Math.round(lp.steps.length/STEPS));
     d.innerHTML=`<span class="lname">Layer ${i+1} — <b>${lp.name}</b> ${lp.recording?'<span class="rec">● rec</span>':''}</span>
       <span class="chip">${barsN>1?barsN+' bars · ':''}${cnt} notes</span>`;
+    const inst=document.createElement('select'); inst.title='Instrument for this layer — swap it, keep the notes';
+    fillPatchSelect(inst); inst.value=lp.patchIndex;
+    inst.onchange=()=>{ const suffix=lp.name.split('·').slice(1).join('·').trim(); lp.patchIndex=+inst.value;
+      lp.name=PATCHES[+inst.value].name+(suffix?' · '+suffix:''); renderLayers(); if(lp.grid && typeof buildNoteGrid==='function') buildNoteGrid(); };
     const spd=document.createElement('select'); spd.title='Speed of THIS instrument — stays in time with the rest';
     [['0.25','¼× slower'],['0.5','½× slower'],['1','1× normal'],['2','2× faster']].forEach(([v,t])=>{
       const o=document.createElement('option'); o.value=v; o.textContent=t; if((lp.speed||1)==+v) o.selected=true; spd.appendChild(o); });
@@ -1321,7 +1335,7 @@ function renderLayers(){
     mute.onclick=()=>{lp.muted=!lp.muted; if(lp.muted){lp._steps=lp.steps;lp.steps=new Array(lp._steps.length).fill(null);}else{lp.steps=lp._steps;} renderLayers();};
     const del=document.createElement('button'); del.textContent='✕';
     del.onclick=()=>{loops.splice(i,1); renderLayers();};
-    d.appendChild(spd); d.appendChild(mute); d.appendChild(del); layersEl.appendChild(d);
+    d.appendChild(inst); d.appendChild(spd); d.appendChild(mute); d.appendChild(del); layersEl.appendChild(d);
   });
 }
 
@@ -1560,6 +1574,7 @@ function switchPat(i){
     const kEl=document.getElementById('thKey'), scEl=document.getElementById('thScale');
     if(kEl&&scEl){ kEl.value=patterns[i].key||0; scEl.value=patterns[i].scale; renderTheory(); }
   }
+  activeGridId=null;   // pick the new part's first synth part
   if(typeof buildNoteGrid==='function') buildNoteGrid();
 }
 function nextPartName(){
@@ -2187,18 +2202,30 @@ document.getElementById('sugBass').onclick=suggestBass;
 document.getElementById('sugMel').onclick=suggestMelody;
 
 /* ---------- Note grid: scale-aware piano-roll for the current part ---------- */
-const noteSeq=document.getElementById('noteSeq'), noteStepLabels=document.getElementById('noteStepLabels'), noteGridInfo=document.getElementById('noteGridInfo');
+const noteSeq=document.getElementById('noteSeq'), noteStepLabels=document.getElementById('noteStepLabels');
+const synthPartSel=document.getElementById('synthPartSel'), synthInst=document.getElementById('synthInst'), addSynthPartBtn=document.getElementById('addSynthPart');
+fillPatchSelect(synthInst);
+let activeGridId=null, gridCounter=0;
 function scaleRows(){ const s=SCALES[thScale.value]; if(!s) return [];
   const root=+thKey.value, pcs=new Set(s.iv.map(x=>((root+x)%12+12)%12)); const rows=[];
   for(let m=48;m<=72;m++) if(pcs.has(((m%12)+12)%12)) rows.push(m);   // 2 octaves of in-scale notes
   return rows.reverse(); }                                            // high pitch at top
-function gridLayer(){ return loops.find(l=>l.grid); }
-function gridLayerEnsure(){ let g=gridLayer();
-  if(!g){ g={patchIndex:state.patchIndex, name:PATCHES[state.patchIndex].name+' · notes', speed:1, grid:true, steps:new Array(STEPS).fill(null)}; loops.push(g); renderLayers(); }
-  return g; }
+function gridLayers(){ const gs=loops.filter(l=>l.grid); gs.forEach(g=>{ if(g.gid==null) g.gid=++gridCounter; }); return gs; }
+function activeGrid(){ const gs=gridLayers(); return gs.find(l=>l.gid===activeGridId) || gs[0] || null; }
+function newSynthPart(){ const g={gid:++gridCounter, patchIndex:state.patchIndex, name:PATCHES[state.patchIndex].name+' · notes', speed:1, grid:true, steps:new Array(STEPS).fill(null)};
+  loops.push(g); activeGridId=g.gid; renderLayers(); return g; }
+function refreshSynthControls(){
+  const gs=gridLayers(), ag=activeGrid();
+  synthPartSel.innerHTML='';
+  if(!gs.length){ const o=document.createElement('option'); o.textContent='(none — click a cell or ＋)'; o.disabled=true; synthPartSel.appendChild(o); }
+  gs.forEach((g,i)=>{ const o=document.createElement('option'); o.value=g.gid;
+    o.textContent='Synth '+(i+1)+' · '+PATCHES[g.patchIndex].name+' ('+g.steps.reduce((a,c)=>a+(c?c.length:0),0)+')';
+    if(ag && g.gid===ag.gid) o.selected=true; synthPartSel.appendChild(o); });
+  if(ag) synthInst.value=ag.patchIndex;
+}
 function buildNoteGrid(){
   if(!theoryReady||!noteSeq) return;
-  const rows=scaleRows(), gl=gridLayer(), per=STEPS/4, root=+thKey.value;
+  const rows=scaleRows(), gl=activeGrid(), per=STEPS/4, root=+thKey.value;
   noteStepLabels.style.gridTemplateColumns=gridCols();
   noteStepLabels.innerHTML='<div></div>'+Array.from({length:STEPS},(_,i)=>`<div>${i%per===0?(i/per+1):'·'}</div>`).join('');
   noteSeq.innerHTML='';
@@ -2206,25 +2233,29 @@ function buildNoteGrid(){
     const row=document.createElement('div'); row.className='seqrow'; row.style.gridTemplateColumns=gridCols();
     const lab=document.createElement('div'); lab.className='rowlabel'; lab.textContent=NOTE_NAMES[((midi%12)+12)%12]+(Math.floor(midi/12)-1);
     if(((midi%12)+12)%12===root) lab.style.color='var(--accent2)';
-    lab.title='Click to preview'; lab.onclick=()=>{ initAudio(); const v=noteOn(midi,90); killVoice(v,AC.currentTime+0.4); activeVoices.delete(midi); };
+    lab.title='Click to preview'; lab.onclick=()=>{ initAudio(); const pv=(gl?gl.patchIndex:state.patchIndex), sp=state.patchIndex; state.patchIndex=pv; const v=noteOn(midi,90); state.patchIndex=sp; killVoice(v,AC.currentTime+0.4); activeVoices.delete(midi); };
     row.appendChild(lab);
     for(let s=0;s<STEPS;s++){ const c=document.createElement('div'); c.className='ncell'; c.dataset.step=s;
       if(gl && gl.steps[s] && gl.steps[s].some(e=>e.note===midi)) c.classList.add('on');
       c.onclick=()=>toggleNote(midi,s,c); row.appendChild(c); }
     noteSeq.appendChild(row);
   });
-  noteGridInfoUpdate();
+  refreshSynthControls();
 }
-function noteGridInfoUpdate(){ const gl=gridLayer(); if(noteGridInfo) noteGridInfo.textContent=gl?('· '+gl.steps.reduce((a,c)=>a+(c?c.length:0),0)+' notes on '+PATCHES[gl.patchIndex].name):''; }
 function toggleNote(midi,s,c){
-  initAudio(); const gl=gridLayerEnsure(); gl.patchIndex=state.patchIndex; gl.name=PATCHES[state.patchIndex].name+' · notes';
+  initAudio(); let gl=activeGrid(); if(!gl) gl=newSynthPart();
   if(!gl.steps[s]) gl.steps[s]=[];
   const i=gl.steps[s].findIndex(e=>e.note===midi);
   if(i>=0){ gl.steps[s].splice(i,1); if(!gl.steps[s].length) gl.steps[s]=null; c.classList.remove('on'); }
-  else { gl.steps[s].push({note:midi,dur:1}); c.classList.add('on'); const v=noteOn(midi,95); killVoice(v,AC.currentTime+0.4); activeVoices.delete(midi); }
-  renderLayers(); noteGridInfoUpdate();
+  else { gl.steps[s].push({note:midi,dur:1}); c.classList.add('on');
+    const sp=state.patchIndex; state.patchIndex=gl.patchIndex; const v=noteOn(midi,95); state.patchIndex=sp; killVoice(v,AC.currentTime+0.4); activeVoices.delete(midi); }
+  renderLayers(); refreshSynthControls();
 }
-document.getElementById('clearNotes').onclick=()=>{ const gl=gridLayer(); if(gl){ gl.steps=new Array(STEPS).fill(null); if(gl.muted) gl._steps=gl.steps.slice(); } buildNoteGrid(); renderLayers(); };
+synthPartSel.onchange=()=>{ activeGridId=+synthPartSel.value; buildNoteGrid(); };
+addSynthPartBtn.onclick=()=>{ newSynthPart(); buildNoteGrid(); };
+synthInst.onchange=()=>{ const ag=activeGrid(); if(!ag){ return; } const suffix=ag.name.split('·').slice(1).join('·').trim();
+  ag.patchIndex=+synthInst.value; ag.name=PATCHES[+synthInst.value].name+(suffix?' · '+suffix:' · notes'); renderLayers(); refreshSynthControls(); };
+document.getElementById('clearNotes').onclick=()=>{ const gl=activeGrid(); if(gl){ gl.steps=new Array(STEPS).fill(null); if(gl.muted) gl._steps=gl.steps.slice(); } buildNoteGrid(); renderLayers(); };
 
 theoryReady=true; renderTheory();
 
