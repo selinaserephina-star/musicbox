@@ -47,6 +47,16 @@
   .parttabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
   .parttabs button.active{background:linear-gradient(180deg,#4f6fff,#3d55e0);border-color:#5f7bff}
   .arrange{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;min-height:20px}
+  .arrwrap{position:relative;overflow-x:auto;overflow-y:hidden;background:#0a0b0f;border:1px solid var(--line);border-radius:10px;padding-top:20px}
+  .arrruler{position:absolute;top:0;left:0;height:20px;background:#12151f;border-bottom:1px solid var(--line)}
+  .arrruler .bar{position:absolute;top:0;height:20px;border-left:1px solid #2a2e42;font-size:9px;color:#565c78;padding-left:3px;box-sizing:border-box}
+  .arrlanes{position:relative}
+  .arrlane{height:34px;border-bottom:1px dashed #1c2030;box-sizing:border-box}
+  .arrblock{position:absolute;height:30px;top:2px;border-radius:7px;color:#fff;font-size:11px;padding:4px 16px 3px 7px;overflow:hidden;white-space:nowrap;cursor:grab;box-shadow:0 2px 8px #0006;touch-action:none;user-select:none}
+  .arrblock:active{cursor:grabbing}
+  .arrblock .rz{position:absolute;top:0;right:0;width:9px;height:100%;cursor:ew-resize;background:linear-gradient(90deg,transparent,#ffffff55);border-radius:0 7px 7px 0}
+  .arrblock .x{position:absolute;top:0;right:3px;cursor:pointer;font-size:11px;opacity:.9;z-index:2}
+  .arrplayhead{position:absolute;top:0;width:2px;background:var(--good);pointer-events:none;display:none;z-index:5}
   .block{display:flex;align-items:center;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:6px 8px;font-size:12px}
   .block b{color:var(--accent)}
   .block button{padding:2px 7px;border-radius:6px}
@@ -370,7 +380,7 @@
   <!-- ===== SONG BUILDER ===== -->
   <div class="panel" id="songPanel">
     <div class="seqhead">
-      <h2 style="margin:0">🎼 Song builder — arrange your parts into a full track</h2>
+      <h2 style="margin:0">🎬 Arrangement — place parts on lanes; overlaps play together</h2>
       <div class="row">
         <button id="playSongBtn" class="primary">▶ Play song</button>
         <label class="f"><input type="checkbox" id="loopSong" checked> Loop</label>
@@ -380,12 +390,19 @@
     <div class="row" style="margin-bottom:8px">
       <span class="muted">Add part</span>
       <select id="addPatSel"></select>
-      <button id="addBlock">＋ Add to song</button>
-      <button id="clearSong">Clear song</button>
+      <button id="addBlock">＋ Add</button>
+      <button id="clearSong">Clear</button>
+      <span class="muted">Zoom</span>
+      <input type="range" id="arrZoom" min="24" max="90" value="46" style="width:90px" title="Expand the arrangement to place parts precisely">
       <div class="spacer"></div>
       <span class="hint" id="songLen" style="margin:0"></span>
     </div>
-    <div class="arrange" id="arrange"></div>
+    <div id="arrWrap" class="arrwrap">
+      <div id="arrRuler" class="arrruler"></div>
+      <div id="arrLanes" class="arrlanes"></div>
+      <div id="arrPlayhead" class="arrplayhead"></div>
+    </div>
+    <div class="hint">Pick a Part → <b>＋ Add</b>. <b>Drag</b> a block to move it (which bar it starts / which lane), <b>drag its right edge</b> to set how many bars it plays. <b>Blocks that overlap play at the same time</b> — run drums across the top, bring a bass in at bar 5, a lead at bar 9. Everything stays live &amp; editable.</div>
   </div>
 
   <!-- ===== TIMELINE / CLIP BOARD ===== -->
@@ -937,33 +954,33 @@ let patterns=[makePattern('A')];
 let curPat=0;
 let drumGrid=patterns[0].drumGrid;   // live-edit alias of patterns[curPat].drumGrid
 let loops=patterns[0].loops;         // live-edit alias of patterns[curPat].loops
-let song=[];                         // arrangement: [{pat, reps}]
-let songIdx=0, songReps=0;
+let song=[];                         // arrangement blocks: [{pat, startBar, bars, lane}]
+let songBar=0;
 let currentStep=0, tick=0, nextNoteTime=0, seqStartTime=0, timerID=null;
 const lookahead=25, scheduleAhead=0.12;
 
-function secPerStep(){ const i=songPatIndex(); return (60/((patterns[i]&&patterns[i].bpm)||state.bpm))/(STEPS/4); } // per-part tempo, per-resolution
-function songPatIndex(){ return (state.songMode && song.length) ? song[songIdx].pat : curPat; }
+function secPerStep(){ const bpm = state.songMode ? state.bpm : ((patterns[curPat]&&patterns[curPat].bpm)||state.bpm); return (60/bpm)/(STEPS/4); }
+function songPatIndex(){ return curPat; }   // loop-mode only
+function totalBars(){ let m=0; for(const b of song) m=Math.max(m,(b.startBar||0)+(b.bars||1)); return Math.max(1,m); }
+function activeBlocks(bar){ return song.filter(b=> bar>=(b.startBar||0) && bar<((b.startBar||0)+(b.bars||1))); }
 
 function scheduler(){
   while(nextNoteTime < AC.currentTime + scheduleAhead){
-    const pIdx=songPatIndex();
-    scheduleStep(patterns[pIdx], currentStep, nextNoteTime, tick);
-    stepQueue.push({step:currentStep, time:nextNoteTime, pat:pIdx});
+    if(state.songMode){
+      const act=activeBlocks(songBar);
+      act.forEach(b=> scheduleStep(patterns[b.pat], currentStep, nextNoteTime, tick));   // overlapping parts mix
+      stepQueue.push({step:currentStep, time:nextNoteTime, pat: act.length?act[0].pat:-1});
+    } else {
+      scheduleStep(patterns[curPat], currentStep, nextNoteTime, tick);
+      stepQueue.push({step:currentStep, time:nextNoteTime, pat:curPat});
+    }
     nextNoteTime += secPerStep();
-    tick++;
-    currentStep++;
+    tick++; currentStep++;
     if(currentStep>=STEPS){
       currentStep=0;
-      if(state.songMode && song.length){
-        songReps++;
-        if(songReps >= (song[songIdx].reps||1)){
-          songReps=0; songIdx++;
-          if(songIdx>=song.length){
-            if(loopSongEl && loopSongEl.checked){ songIdx=0; }
-            else { stop(); return; }
-          }
-        }
+      if(state.songMode){
+        songBar++;
+        if(songBar>=totalBars()){ if(loopSongEl && loopSongEl.checked){ songBar=0; } else { stop(); return; } }
         updateNowPlaying();
       }
     }
@@ -1018,7 +1035,7 @@ function play(songMode=false){
   initAudio(); if(AC.state==='suspended') AC.resume();
   if(songMode && !song.length){ alert("Your song is empty — add some parts in the Song builder first."); return; }
   state.playing=true; state.songMode=songMode;
-  currentStep=0; tick=0; songIdx=0; songReps=0;
+  currentStep=0; tick=0; songBar=0;
   nextNoteTime=AC.currentTime+0.06; seqStartTime=nextNoteTime;
   timerID=setInterval(scheduler, lookahead);
   playBtn.textContent="■ Stop"; playBtn.classList.add('playing');
@@ -1627,16 +1644,18 @@ document.getElementById('delPart').onclick=()=>{
   if(patterns.length<=1){ alert('Keep at least one part.'); return; }
   if(!confirm('Delete part "'+patterns[curPat].name+'"?  Song blocks using it will be removed.')) return;
   const del=curPat;
-  song=song.filter(b=>b.pat!==del).map(b=>({pat:b.pat>del?b.pat-1:b.pat, reps:b.reps}));
+  song=song.filter(b=>b.pat!==del).map(b=>({pat:b.pat>del?b.pat-1:b.pat, startBar:b.startBar, bars:b.bars, lane:b.lane}));
   patterns.splice(del,1); curPat=Math.max(0,del-1);
   drumGrid=patterns[curPat].drumGrid; loops=patterns[curPat].loops;
   buildSeq(); renderLayers(); renderParts(); refreshAddPat(); renderArrange();
 };
 
-/* ---------- Song arrangement ---------- */
-const arrangeEl=document.getElementById('arrange'), addPatSel=document.getElementById('addPatSel');
+/* ---------- Arrangement: place parts on lanes; overlaps play together ---------- */
+const addPatSel=document.getElementById('addPatSel');
 const nowPlaying=document.getElementById('nowPlaying'), songLen=document.getElementById('songLen');
 const playSongBtnEl=document.getElementById('playSongBtn'), loopSongEl=document.getElementById('loopSong');
+const arrRuler=document.getElementById('arrRuler'), arrLanes=document.getElementById('arrLanes'), arrPlayhead=document.getElementById('arrPlayhead');
+let BARPX=46; const ARLANES=6;
 function refreshAddPat(){
   addPatSel.innerHTML=''; patterns.forEach((p,i)=>{const o=document.createElement('option');o.value=i;o.textContent='Part '+p.name;addPatSel.appendChild(o);});
   const bp=document.getElementById('bouncePatSel');
@@ -1647,34 +1666,50 @@ function refreshAddPat(){
   }
 }
 function fmtTime(sec){ const m=Math.floor(sec/60), s=Math.round(sec%60); return m+':'+String(s).padStart(2,'0'); }
+function arrWidth(){ return Math.max(16, totalBars()+2)*BARPX; }
+function posArrBlock(el,b){ el.style.left=((b.startBar||0)*BARPX)+'px'; el.style.top=((b.lane||0)*34+2)+'px'; el.style.width=Math.max(24,(b.bars||1)*BARPX-2)+'px'; }
+function laneEnd(lane){ let e=0; song.forEach(b=>{ if((b.lane||0)===lane) e=Math.max(e,(b.startBar||0)+(b.bars||1)); }); return e; }
 function renderArrange(){
-  arrangeEl.innerHTML='';
-  if(!song.length){ arrangeEl.innerHTML='<span class="muted" style="font-size:12px">Empty. Build parts above, then “＋ Add to song” in order — e.g. A×4, B×8, C×8 — and press ▶ Play song.</span>'; if(songLen) songLen.textContent=''; return; }
-  const mkbtn=(t,fn)=>{const b=document.createElement('button');b.textContent=t;b.onclick=fn;return b;};
+  const W=arrWidth();
+  arrRuler.style.width=W+'px'; arrRuler.innerHTML='';
+  for(let bar=0;bar<=totalBars()+1;bar++){ const d=document.createElement('div'); d.className='bar'; d.style.left=(bar*BARPX)+'px'; d.textContent=bar+1; arrRuler.appendChild(d); }
+  arrLanes.style.width=W+'px'; arrLanes.style.height=(ARLANES*34)+'px'; arrLanes.innerHTML='';
+  for(let i=0;i<ARLANES;i++){ const ln=document.createElement('div'); ln.className='arrlane'; arrLanes.appendChild(ln); }
   song.forEach((b,i)=>{
-    const el=document.createElement('div'); el.className='block';
-    const label=document.createElement('span'); label.innerHTML='<b>'+(patterns[b.pat]?patterns[b.pat].name:'?')+'</b>';
-    const chip=document.createElement('span'); chip.className='chip'; chip.textContent='×'+b.reps;
-    el.append(label,
-      mkbtn('−',()=>{b.reps=Math.max(1,b.reps-1);renderArrange();}), chip,
-      mkbtn('+',()=>{b.reps++;renderArrange();}),
-      mkbtn('◀',()=>{ if(i>0){[song[i-1],song[i]]=[song[i],song[i-1]];renderArrange();} }),
-      mkbtn('▶',()=>{ if(i<song.length-1){[song[i+1],song[i]]=[song[i],song[i+1]];renderArrange();} }),
-      mkbtn('✕',()=>{song.splice(i,1);renderArrange();}));
-    arrangeEl.appendChild(el);
+    if(b.startBar==null)b.startBar=0; if(b.lane==null)b.lane=0; if(!b.bars)b.bars=4;
+    const el=document.createElement('div'); el.className='arrblock';
+    const hue=((b.pat||0)*67)%360; el.style.background='linear-gradient(180deg,hsl('+hue+',58%,50%),hsl('+hue+',58%,40%))'; el.style.borderTop='2px solid hsl('+hue+',75%,68%)';
+    el.innerHTML='<span>'+(patterns[b.pat]?patterns[b.pat].name:'?')+'</span><span class="x">✕</span><span class="rz"></span>';
+    posArrBlock(el,b);
+    el.querySelector('.x').onclick=(ev)=>{ ev.stopPropagation(); song.splice(i,1); renderArrange(); };
+    el.onpointerdown=(ev)=>{ if(ev.target.classList.contains('x')||ev.target.classList.contains('rz'))return; ev.preventDefault(); el.setPointerCapture(ev.pointerId);
+      const sx=ev.clientX, s0=b.startBar, laneRect=arrLanes.getBoundingClientRect();
+      el.onpointermove=(m)=>{ b.startBar=Math.max(0,Math.round(s0+(m.clientX-sx)/BARPX));
+        b.lane=Math.max(0,Math.min(ARLANES-1,Math.floor((m.clientY-laneRect.top)/34))); posArrBlock(el,b); };
+      el.onpointerup=()=>{ el.onpointermove=null; el.onpointerup=null; renderArrange(); };
+    };
+    const rz=el.querySelector('.rz');
+    rz.onpointerdown=(ev)=>{ ev.stopPropagation(); ev.preventDefault(); rz.setPointerCapture(ev.pointerId);
+      const sx=ev.clientX, s0=b.bars;
+      rz.onpointermove=(m)=>{ b.bars=Math.max(1,Math.round(s0+(m.clientX-sx)/BARPX)); posArrBlock(el,b); };
+      rz.onpointerup=()=>{ rz.onpointermove=null; rz.onpointerup=null; renderArrange(); };
+    };
+    arrLanes.appendChild(el);
   });
-  let bars=0, secs=0;
-  for(const b of song){ const r=b.reps||1; bars+=r; const bp=(patterns[b.pat]&&patterns[b.pat].bpm)||state.bpm; secs+=r*4*60/bp; }
-  if(songLen) songLen.textContent=song.length+' parts · '+bars+' bars · ~'+fmtTime(secs);
+  const bars=totalBars(), secs=bars*4*60/state.bpm;
+  if(songLen) songLen.textContent = song.length? (song.length+' blocks · '+bars+' bars · ~'+fmtTime(secs)) : 'Empty — pick a part and press ＋ Add';
 }
-document.getElementById('addBlock').onclick=()=>{ song.push({pat:+addPatSel.value||0, reps:4}); renderArrange(); };
+document.getElementById('addBlock').onclick=()=>{ const pat=+addPatSel.value||0; song.push({pat, startBar:laneEnd(0), bars:4, lane:0}); renderArrange(); };
 document.getElementById('clearSong').onclick=()=>{ song=[]; renderArrange(); };
+document.getElementById('arrZoom').oninput=e=>{ BARPX=+e.target.value; renderArrange(); };
 playSongBtnEl.onclick=()=>{ (state.playing&&state.songMode)?stop():play(true); };
 function updateNowPlaying(){
   if(!nowPlaying) return;
-  if(state.playing && state.songMode && song.length){
-    const b=song[songIdx]; nowPlaying.textContent='▶ '+(patterns[b.pat]?patterns[b.pat].name:'?')+'  ('+(songReps+1)+'/'+b.reps+')  ·  part '+(songIdx+1)+'/'+song.length;
-  } else nowPlaying.textContent='';
+  if(state.playing && state.songMode){
+    const act=activeBlocks(songBar).map(b=>patterns[b.pat]?patterns[b.pat].name:'?');
+    nowPlaying.textContent='▶ bar '+(songBar+1)+'/'+totalBars()+(act.length?' · '+act.join(' + '):'');
+    if(arrPlayhead){ arrPlayhead.style.display='block'; arrPlayhead.style.height=(20+ARLANES*34)+'px'; arrPlayhead.style.left=(songBar*BARPX)+'px'; }
+  } else { nowPlaying.textContent=''; if(arrPlayhead) arrPlayhead.style.display='none'; }
 }
 renderParts(); refreshAddPat(); renderArrange();
 
@@ -1831,7 +1866,7 @@ document.getElementById('saveProj').onclick=()=>{
     fx:{drive:state.drive,chorus:state.chorus,masterCut:state.masterCut,masterRes:state.masterRes,delayFb:state.delayFb,delayTimeMs:state.delayTimeMs,delayManual:state.delayManual},
     patterns: patterns.map(p=>({ name:p.name, bpm:p.bpm, key:p.key, scale:p.scale, drumGrid:p.drumGrid,
       loops:p.loops.map(lp=>({patchIndex:lp.patchIndex,name:lp.name,mute:!!lp.mute,speed:lp.speed||1,grid:!!lp.grid,gid:lp.gid,steps:lp.steps})) })),
-    song: song.map(b=>({pat:b.pat,reps:b.reps})),
+    song: song.map(b=>({pat:b.pat,startBar:b.startBar,bars:b.bars,lane:b.lane})),
     samples: samples.map(s=> s? {name:s.name,start:s.start,end:s.end,gain:s.gain,rev:s.rev,wav:bytesToB64(bufferToWavBytes(s.buffer))} : null)
   };
   const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
@@ -1871,7 +1906,9 @@ document.getElementById('openProj').onchange=async(e)=>{
       drumGrid: DRUMS.map((_,r)=>((p.drumGrid&&p.drumGrid[r])||new Array(STEPS).fill(false)).slice(0,STEPS)),
       loops: (p.loops||[]).map(l=>({patchIndex:l.patchIndex||0,name:l.name||'Layer',speed:l.speed||1,grid:!!l.grid,gid:l.gid,mute:!!(l.mute||l.muted),steps:l.steps||new Array(STEPS).fill(null)}))
     }));
-    song = (data.song||[]).map(b=>({pat:Math.min(b.pat||0,patterns.length-1), reps:b.reps||1}));
+    { let sb=0; song=(data.song||[]).map(b=>{ const pat=Math.min(b.pat||0,patterns.length-1);
+        if(b.bars==null && b.reps!=null){ const blk={pat,startBar:sb,bars:b.reps||1,lane:0}; sb+=blk.bars; return blk; }  // migrate old linear song
+        return {pat, startBar:b.startBar||0, bars:b.bars||1, lane:b.lane||0}; }); }
     curPat = Math.min(data.curPat||0, patterns.length-1);
     drumGrid=patterns[curPat].drumGrid; loops=patterns[curPat].loops;
     buildSeq(); renderLayers(); renderParts(); refreshAddPat(); renderArrange();
