@@ -107,10 +107,11 @@
     position:sticky;left:0;z-index:2;background:var(--panel)}
   .steplabels div:first-child{position:sticky;left:0;z-index:2;background:var(--panel)}
   .rowlabel:hover{color:var(--text)}
-  .cell{aspect-ratio:1/1;min-height:22px;background:var(--pad);border:1px solid #2c3145;border-radius:6px;cursor:pointer;transition:.08s}
-  .cell:nth-child(4n+2){background:#282d40}
+  .cell,.ncell{aspect-ratio:1/1;min-height:22px;background:var(--pad);border:1px solid #2c3145;border-radius:6px;cursor:pointer;transition:.08s}
+  .cell:nth-child(4n+2),.ncell:nth-child(4n+2){background:#282d40}
   .cell.on{background:linear-gradient(180deg,var(--accent),#4c63d6);border-color:#88a0ff;box-shadow:0 0 10px rgba(108,140,255,.5)}
-  .cell.play{outline:2px solid #fff6}
+  .ncell.on{background:linear-gradient(180deg,#39d98a,#23b06e);border-color:#7ff0bd;box-shadow:0 0 10px rgba(57,217,138,.45)}
+  .cell.play,.ncell.play{outline:2px solid #fff6}
   .steplabels{display:grid;grid-template-columns:88px repeat(16,1fr);gap:5px;margin-bottom:6px}
   .steplabels div{text-align:center;font-size:10px;color:#565c78}
 
@@ -228,6 +229,18 @@
           <div class="steplabels" id="stepLabels"></div>
           <div id="seq"></div>
         </div>
+      </div>
+
+      <div class="panel">
+        <div class="seqhead">
+          <h2 style="margin:0">🎹 Note Grid <span class="muted" id="noteGridInfo" style="font-size:11px;letter-spacing:0"></span></h2>
+          <button id="clearNotes">Clear notes</button>
+        </div>
+        <div class="seqscroll">
+          <div class="steplabels" id="noteStepLabels"></div>
+          <div id="noteSeq"></div>
+        </div>
+        <div class="hint">Rows are the notes of your current <b>Scale of keys</b> — click cells to place a melody (plays on the current <b>Sound</b>). Only in-key notes show, so it always sounds right. Row labels preview the note.</div>
       </div>
 
       <div class="panel">
@@ -978,10 +991,10 @@ function draw(){
   while(stepQueue.length && stepQueue[0].time < AC.currentTime){ const it=stepQueue.shift(); s=it.step; pp=it.pat; }
   if(s>=0){ if(pp===curPat) highlightStep(s); else clearHighlight(); }
 }
-function clearHighlight(){ document.querySelectorAll('.cell.play').forEach(c=>c.classList.remove('play')); }
+function clearHighlight(){ document.querySelectorAll('.cell.play,.ncell.play').forEach(c=>c.classList.remove('play')); }
 function highlightStep(s){
   clearHighlight();
-  document.querySelectorAll('.cell[data-step="'+s+'"]').forEach(c=>c.classList.add('play'));
+  document.querySelectorAll('.cell[data-step="'+s+'"],.ncell[data-step="'+s+'"]').forEach(c=>c.classList.add('play'));
 }
 
 function play(songMode=false){
@@ -1205,6 +1218,7 @@ function setResolution(newN){
   STEPS=newN;
   drumGrid=patterns[curPat].drumGrid; loops=patterns[curPat].loops;
   buildStepLabels(); buildSeq(); renderLayers();
+  if(typeof buildNoteGrid==='function') buildNoteGrid();
   const sel=document.getElementById('timingRes'); if(sel) sel.value=STEPS;
   logMonitor('Timing set to 1/'+STEPS);
 }
@@ -1546,6 +1560,7 @@ function switchPat(i){
     const kEl=document.getElementById('thKey'), scEl=document.getElementById('thScale');
     if(kEl&&scEl){ kEl.value=patterns[i].key||0; scEl.value=patterns[i].scale; renderTheory(); }
   }
+  if(typeof buildNoteGrid==='function') buildNoteGrid();
 }
 function nextPartName(){
   for(let c=0;c<26;c++){ const n=String.fromCharCode(65+c); if(!patterns.some(p=>p.name===n)) return n; }
@@ -2100,6 +2115,7 @@ function renderTheory(){
   if(kr) kr.value=thKey.value; if(ks) ks.value=thScale.value;   // keep the synth-keys selectors in sync
   if(typeof patterns!=='undefined' && patterns[curPat]){ patterns[curPat].key=+thKey.value; patterns[curPat].scale=thScale.value; }  // each part remembers its key
   highlightScale();
+  if(typeof buildNoteGrid==='function') buildNoteGrid();
   document.getElementById('thNotes').textContent = iv.map(x=>NOTE_NAMES[(rootIdx+x)%12]).join('  ');
   // diatonic chords
   const dc=diatonic(), cEl=document.getElementById('thChords'); cEl.innerHTML='';
@@ -2169,6 +2185,46 @@ function suggestMelody(){
 }
 document.getElementById('sugBass').onclick=suggestBass;
 document.getElementById('sugMel').onclick=suggestMelody;
+
+/* ---------- Note grid: scale-aware piano-roll for the current part ---------- */
+const noteSeq=document.getElementById('noteSeq'), noteStepLabels=document.getElementById('noteStepLabels'), noteGridInfo=document.getElementById('noteGridInfo');
+function scaleRows(){ const s=SCALES[thScale.value]; if(!s) return [];
+  const root=+thKey.value, pcs=new Set(s.iv.map(x=>((root+x)%12+12)%12)); const rows=[];
+  for(let m=48;m<=72;m++) if(pcs.has(((m%12)+12)%12)) rows.push(m);   // 2 octaves of in-scale notes
+  return rows.reverse(); }                                            // high pitch at top
+function gridLayer(){ return loops.find(l=>l.grid); }
+function gridLayerEnsure(){ let g=gridLayer();
+  if(!g){ g={patchIndex:state.patchIndex, name:PATCHES[state.patchIndex].name+' · notes', speed:1, grid:true, steps:new Array(STEPS).fill(null)}; loops.push(g); renderLayers(); }
+  return g; }
+function buildNoteGrid(){
+  if(!theoryReady||!noteSeq) return;
+  const rows=scaleRows(), gl=gridLayer(), per=STEPS/4, root=+thKey.value;
+  noteStepLabels.style.gridTemplateColumns=gridCols();
+  noteStepLabels.innerHTML='<div></div>'+Array.from({length:STEPS},(_,i)=>`<div>${i%per===0?(i/per+1):'·'}</div>`).join('');
+  noteSeq.innerHTML='';
+  rows.forEach(midi=>{
+    const row=document.createElement('div'); row.className='seqrow'; row.style.gridTemplateColumns=gridCols();
+    const lab=document.createElement('div'); lab.className='rowlabel'; lab.textContent=NOTE_NAMES[((midi%12)+12)%12]+(Math.floor(midi/12)-1);
+    if(((midi%12)+12)%12===root) lab.style.color='var(--accent2)';
+    lab.title='Click to preview'; lab.onclick=()=>{ initAudio(); const v=noteOn(midi,90); killVoice(v,AC.currentTime+0.4); activeVoices.delete(midi); };
+    row.appendChild(lab);
+    for(let s=0;s<STEPS;s++){ const c=document.createElement('div'); c.className='ncell'; c.dataset.step=s;
+      if(gl && gl.steps[s] && gl.steps[s].some(e=>e.note===midi)) c.classList.add('on');
+      c.onclick=()=>toggleNote(midi,s,c); row.appendChild(c); }
+    noteSeq.appendChild(row);
+  });
+  noteGridInfoUpdate();
+}
+function noteGridInfoUpdate(){ const gl=gridLayer(); if(noteGridInfo) noteGridInfo.textContent=gl?('· '+gl.steps.reduce((a,c)=>a+(c?c.length:0),0)+' notes on '+PATCHES[gl.patchIndex].name):''; }
+function toggleNote(midi,s,c){
+  initAudio(); const gl=gridLayerEnsure(); gl.patchIndex=state.patchIndex; gl.name=PATCHES[state.patchIndex].name+' · notes';
+  if(!gl.steps[s]) gl.steps[s]=[];
+  const i=gl.steps[s].findIndex(e=>e.note===midi);
+  if(i>=0){ gl.steps[s].splice(i,1); if(!gl.steps[s].length) gl.steps[s]=null; c.classList.remove('on'); }
+  else { gl.steps[s].push({note:midi,dur:1}); c.classList.add('on'); const v=noteOn(midi,95); killVoice(v,AC.currentTime+0.4); activeVoices.delete(midi); }
+  renderLayers(); noteGridInfoUpdate();
+}
+document.getElementById('clearNotes').onclick=()=>{ const gl=gridLayer(); if(gl){ gl.steps=new Array(STEPS).fill(null); if(gl.muted) gl._steps=gl.steps.slice(); } buildNoteGrid(); renderLayers(); };
 
 theoryReady=true; renderTheory();
 
