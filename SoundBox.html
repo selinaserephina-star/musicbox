@@ -119,6 +119,9 @@
   .layer{display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);
     border-radius:10px;padding:8px 10px;margin-bottom:6px;font-size:12px}
   .layer .lname{flex:1}
+  .layer.silenced{opacity:.5}
+  .layer button.on-mute{background:linear-gradient(180deg,#ff5c9d,#e2437f);border-color:#ff6cab;color:#fff}
+  .layer button.on-solo{background:linear-gradient(180deg,#39d98a,#25b573);border-color:#7ff0bd;color:#0e0f13}
   .layer .rec{color:var(--accent2);font-weight:700}
   .chip{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:20px;padding:2px 9px}
 
@@ -966,8 +969,10 @@ function scheduler(){
 function scheduleStep(pat, step, time, tk){
   for(let d=0; d<DRUMS.length; d++){ const v=pat.drumGrid[d][step]; if(v) drumHit(d, time, (typeof v==='number'&&v<=1)?v:1); }
   const sps=secPerStep();
+  const anySolo=pat.loops.some(l=>l.solo);
   for(const lp of pat.loops){
     if(lp.recording) continue;
+    if(anySolo ? !lp.solo : lp.mute) continue;   // solo wins; otherwise mute silences
     const sp=lp.speed||1, len=lp.steps.length;   // loop over the layer's own length (multi-bar loops)
     if(sp>=1){                                   // 1× / 2× / 4× : play sp sub-steps within this tick
       const m=Math.round(sp), sub=sps/m;
@@ -1317,6 +1322,7 @@ const layersEl=document.getElementById('layers');
 function renderLayers(){
   if(!loops.length){ layersEl.innerHTML='<div class="muted" style="font-size:12px">Each layer here is <b>one instrument</b> in this part. Press <b>● Rec Loop</b>, play the keys — your notes become a looping layer. Change the <b>Sound</b> and hit <b>● Rec Loop</b> again to stack another instrument. They all loop together at the <b>Speed</b> above.</div>'; return; }
   layersEl.innerHTML='';
+  const anySolo=loops.some(l=>l.solo);
   loops.forEach((lp,i)=>{
     const d=document.createElement('div'); d.className='layer';
     const cnt=lp.steps.reduce((a,c)=>a+(c?c.length:0),0);
@@ -1331,11 +1337,14 @@ function renderLayers(){
     [['0.25','¼× slower'],['0.5','½× slower'],['1','1× normal'],['2','2× faster']].forEach(([v,t])=>{
       const o=document.createElement('option'); o.value=v; o.textContent=t; if((lp.speed||1)==+v) o.selected=true; spd.appendChild(o); });
     spd.onchange=()=>{ lp.speed=+spd.value; };
-    const mute=document.createElement('button'); mute.textContent=lp.muted?'Unmute':'Mute';
-    mute.onclick=()=>{lp.muted=!lp.muted; if(lp.muted){lp._steps=lp.steps;lp.steps=new Array(lp._steps.length).fill(null);}else{lp.steps=lp._steps;} renderLayers();};
+    const solo=document.createElement('button'); solo.textContent='Solo'; if(lp.solo) solo.classList.add('on-solo');
+    solo.onclick=()=>{ lp.solo=!lp.solo; renderLayers(); };
+    const mute=document.createElement('button'); mute.textContent='Mute'; if(lp.mute) mute.classList.add('on-mute');
+    mute.onclick=()=>{ lp.mute=!lp.mute; renderLayers(); };
     const del=document.createElement('button'); del.textContent='✕';
     del.onclick=()=>{loops.splice(i,1); renderLayers();};
-    d.appendChild(inst); d.appendChild(spd); d.appendChild(mute); d.appendChild(del); layersEl.appendChild(d);
+    if(anySolo ? !lp.solo : lp.mute) d.classList.add('silenced');
+    d.appendChild(inst); d.appendChild(spd); d.appendChild(solo); d.appendChild(mute); d.appendChild(del); layersEl.appendChild(d);
   });
 }
 
@@ -1583,9 +1592,8 @@ function nextPartName(){
 }
 function clonePattern(p,name){
   return {name, bpm:p.bpm, key:p.key, scale:p.scale, drumGrid:p.drumGrid.map(r=>r.slice()),
-    loops:p.loops.map(lp=>({patchIndex:lp.patchIndex,name:lp.name,muted:!!lp.muted,speed:lp.speed||1,
-      steps:lp.steps.map(c=>c?c.map(e=>({...e})):null),
-      _steps:lp._steps?lp._steps.map(c=>c?c.map(e=>({...e})):null):undefined}))};
+    loops:p.loops.map(lp=>({patchIndex:lp.patchIndex,name:lp.name,mute:!!lp.mute,speed:lp.speed||1,grid:!!lp.grid,gid:lp.gid,
+      steps:lp.steps.map(c=>c?c.map(e=>({...e})):null)}))};
 }
 document.getElementById('newPart').onclick=()=>{ patterns.push(makePattern(nextPartName(), +thKey.value, thScale.value)); switchPat(patterns.length-1); refreshAddPat(); renderArrange(); };
 document.getElementById('bridgeBtn').onclick=()=>{
@@ -1808,7 +1816,7 @@ document.getElementById('saveProj').onclick=()=>{
     params:{cutoff:state.cutoff,res:state.res,reverb:state.reverb,delay:state.delay,attack:state.attack,release:state.release,drumVol:state.drumVol,masterVol:state.masterVol},
     fx:{drive:state.drive,chorus:state.chorus,masterCut:state.masterCut,masterRes:state.masterRes,delayFb:state.delayFb,delayTimeMs:state.delayTimeMs,delayManual:state.delayManual},
     patterns: patterns.map(p=>({ name:p.name, bpm:p.bpm, key:p.key, scale:p.scale, drumGrid:p.drumGrid,
-      loops:p.loops.map(lp=>({patchIndex:lp.patchIndex,name:lp.name,muted:!!lp.muted,speed:lp.speed||1,steps:(lp.muted?lp._steps:lp.steps)})) })),
+      loops:p.loops.map(lp=>({patchIndex:lp.patchIndex,name:lp.name,mute:!!lp.mute,speed:lp.speed||1,grid:!!lp.grid,gid:lp.gid,steps:lp.steps})) })),
     song: song.map(b=>({pat:b.pat,reps:b.reps})),
     samples: samples.map(s=> s? {name:s.name,start:s.start,end:s.end,gain:s.gain,rev:s.rev,wav:bytesToB64(bufferToWavBytes(s.buffer))} : null)
   };
@@ -1847,8 +1855,7 @@ document.getElementById('openProj').onchange=async(e)=>{
       bpm: p.bpm || data.bpm || 112,
       key: (p.key==null?0:p.key), scale: p.scale||'Major (happy)',
       drumGrid: DRUMS.map((_,r)=>((p.drumGrid&&p.drumGrid[r])||new Array(STEPS).fill(false)).slice(0,STEPS)),
-      loops: (p.loops||[]).map(l=>{ const lp={patchIndex:l.patchIndex||0,name:l.name||'Layer',speed:l.speed||1,steps:l.steps||new Array(STEPS).fill(null)};
-        if(l.muted){ lp.muted=true; lp._steps=lp.steps; lp.steps=new Array(STEPS).fill(null); } return lp; })
+      loops: (p.loops||[]).map(l=>({patchIndex:l.patchIndex||0,name:l.name||'Layer',speed:l.speed||1,grid:!!l.grid,gid:l.gid,mute:!!(l.mute||l.muted),steps:l.steps||new Array(STEPS).fill(null)}))
     }));
     song = (data.song||[]).map(b=>({pat:Math.min(b.pat||0,patterns.length-1), reps:b.reps||1}));
     curPat = Math.min(data.curPat||0, patterns.length-1);
@@ -2255,7 +2262,7 @@ synthPartSel.onchange=()=>{ activeGridId=+synthPartSel.value; buildNoteGrid(); }
 addSynthPartBtn.onclick=()=>{ newSynthPart(); buildNoteGrid(); };
 synthInst.onchange=()=>{ const ag=activeGrid(); if(!ag){ return; } const suffix=ag.name.split('·').slice(1).join('·').trim();
   ag.patchIndex=+synthInst.value; ag.name=PATCHES[+synthInst.value].name+(suffix?' · '+suffix:' · notes'); renderLayers(); refreshSynthControls(); };
-document.getElementById('clearNotes').onclick=()=>{ const gl=activeGrid(); if(gl){ gl.steps=new Array(STEPS).fill(null); if(gl.muted) gl._steps=gl.steps.slice(); } buildNoteGrid(); renderLayers(); };
+document.getElementById('clearNotes').onclick=()=>{ const gl=activeGrid(); if(gl){ gl.steps=new Array(STEPS).fill(null); } buildNoteGrid(); renderLayers(); };
 
 theoryReady=true; renderTheory();
 
