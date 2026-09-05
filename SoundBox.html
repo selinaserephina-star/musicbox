@@ -1936,6 +1936,15 @@ const recClipBtn=document.getElementById('recClip'), tlPlayBtn=document.getEleme
 function barSec(){ return 4*60/state.bpm; }
 function clipById(id){ return clips.find(c=>c.id===id); }
 function clipUnit(c){ return (c && c.loopLen) ? c.loopLen : (c ? c.buffer.duration : 1); }  // one clean loop length (bar-aligned when known)
+// trim a captured take to start ON the downbeat and be exactly loopLen long, so placed clips line up
+function trimToLoop(L,R,loopLen,sr){
+  const n=Math.round(loopLen*sr), thr=0.02, cap=Math.round(0.16*sr);   // never trim more than ~160ms (the pre-roll)
+  let start=0; for(let i=0;i<L.length;i++){ if(Math.abs(L[i])>thr || Math.abs(R[i])>thr){ start=i; break; } }
+  start=Math.min(start, cap);
+  const oL=new Float32Array(n), oR=new Float32Array(n);
+  for(let i=0;i<n;i++){ oL[i]=L[start+i]||0; oR[i]=R[start+i]||0; }
+  return {L:oL, R:oR};
+}
 function totalTLDur(){ let m=8; for(const t of timeline){ const c=clipById(t.clipId); if(c) m=Math.max(m,t.start+(t.len||clipUnit(c))); } return m; }
 function boardWidth(){ return Math.max(30, totalTLDur()+4)*PXPS; }
 
@@ -1948,9 +1957,10 @@ function finishClipRec(){
   clipProc.onaudioprocess=null; try{ clipProc.disconnect(); }catch(e){} clipProc=null;
   recClipBtn.textContent="● Record clip"; recClipBtn.classList.remove('playing');
   const L=flattenChunks(clipL), R=flattenChunks(clipR);
-  if(L.length){ const buf=AC.createBuffer(2,L.length,AC.sampleRate); buf.copyToChannel(L,0); buf.copyToChannel(R,1);
-    const loopLen = clipRecBars>0 ? clipRecBars*clipRecBarSec : null;   // exact bars → clean loop point
-    addClip("Clip "+(++clipCounter), buf, loopLen); logMonitor("✓ Recorded a "+(L.length/AC.sampleRate).toFixed(1)+"s clip"); }
+  if(L.length){ const loopLen = clipRecBars>0 ? clipRecBars*clipRecBarSec : null;   // exact bars → clean loop point
+    let bL=L,bR=R; if(loopLen){ const t=trimToLoop(L,R,loopLen,AC.sampleRate); bL=t.L; bR=t.R; }  // beat-align timed clips
+    const buf=AC.createBuffer(2,bL.length,AC.sampleRate); buf.copyToChannel(bL,0); buf.copyToChannel(bR,1);
+    addClip("Clip "+(++clipCounter), buf, loopLen); logMonitor("✓ Recorded a "+(bL.length/AC.sampleRate).toFixed(1)+"s clip"); }
   if(clipAutoPlayed){ stop(); clipAutoPlayed=false; }
 }
 let clipAutoPlayed=false;
@@ -1996,12 +2006,13 @@ bouncePartBtn.onclick=async()=>{
   if(savedSolo){ loops.forEach((l,k)=>l.solo=savedSolo[k]); renderLayers(); }
   try{ comp.disconnect(proc); }catch(e){} proc.onaudioprocess=null; try{ proc.disconnect(); }catch(e){}
   const fL=flattenChunks(L), fR=flattenChunks(R);
-  if(fL.length){ const buf=AC.createBuffer(2,fL.length,AC.sampleRate); buf.copyToChannel(fL,0); buf.copyToChannel(fR,1);
-    const loopLen=bars*barSec();
+  if(fL.length){ const loopLen=bars*barSec();
+    const t=trimToLoop(fL,fR,loopLen,AC.sampleRate);                 // downbeat-aligned, exact length
+    const buf=AC.createBuffer(2,t.L.length,AC.sampleRate); buf.copyToChannel(t.L,0); buf.copyToChannel(t.R,1);
     addClip(label, buf, loopLen);
     const c=clips[clips.length-1];
     timeline.push({id:++tlCounter, clipId:c.id, lane:0, start:timelineEnd(0), len:loopLen});
-    renderTL(); logMonitor("✓ Added "+label+" to the timeline"); }
+    renderTL(); logMonitor("✓ Added "+label+" to the timeline (beat-aligned)"); }
   bouncing=false; bouncePartBtn.textContent='＋ Add part'; bouncePartBtn.classList.remove('playing');
 };
 document.getElementById('tlZoom').oninput=e=>{ PXPS=+e.target.value; renderTL(); };
