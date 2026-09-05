@@ -122,6 +122,7 @@
   .layer.silenced{opacity:.5}
   .layer button.on-mute{background:linear-gradient(180deg,#ff5c9d,#e2437f);border-color:#ff6cab;color:#fff}
   .layer button.on-solo{background:linear-gradient(180deg,#39d98a,#25b573);border-color:#7ff0bd;color:#0e0f13}
+  .layer button.on-edit{border-color:var(--accent);color:var(--accent)}
   .layer .rec{color:var(--accent2);font-weight:700}
   .chip{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:20px;padding:2px 9px}
 
@@ -411,10 +412,12 @@
         <span class="muted">Snap</span>
         <select id="tlSnap" title="How finely clips snap when you drag them on the timeline">
           <option value="bar">Bar</option>
-          <option value="beat">Beat</option>
+          <option value="beat" selected>Beat</option>
           <option value="half">½ Beat</option>
           <option value="off">Off (free)</option>
         </select>
+        <span class="muted">Zoom</span>
+        <input type="range" id="tlZoom" min="16" max="120" value="40" style="width:90px" title="Expand the timeline to place clips precisely">
       </div>
     </div>
     <div class="row" style="margin-bottom:8px">
@@ -426,7 +429,7 @@
       <div id="tlLanes" class="tllanes"></div>
       <div id="tlPlayhead" class="tlplayhead"></div>
     </div>
-    <div class="hint"><b>Easiest way to build a song:</b> make a beat in a part below → pick it in the <b>part menu</b> up here → hit <b>＋ Add part</b>, and it drops straight onto the timeline. Then <b>drag blocks left/right</b> to place them in time, and <b>drag a block's right edge</b> to change its length. Repeat for Part B, drop <b>＋ Section</b> markers for the bridge, and <b>⤓ Export WAV</b> when it sounds good. (<b>● Record clip</b> is for capturing a live take or your mic instead.)</div>
+    <div class="hint"><b>Build a song:</b> pick a whole <b>Part</b> or an <b>individual synth part</b> (the ↳ items) in the menu → <b>＋ Add part</b> drops it on the timeline. <b>Drag blocks left/right</b> to place them (Snap = Beat for fine control), <b>drag the right edge</b> to change length, and stack across the <b>4 lanes</b>. Use <b>Zoom</b> to expand the view for precise placement, drop <b>＋ Section</b> markers for bridges, and <b>⤓ Export WAV</b> when it flows. (<b>● Record clip</b> captures a live take or your mic.)</div>
   </div>
 
   <!-- ===== CHORDS & SCALES HELPER ===== -->
@@ -1343,9 +1346,15 @@ function renderLayers(){
     mute.onclick=()=>{ lp.mute=!lp.mute; renderLayers(); };
     const del=document.createElement('button'); del.textContent='✕';
     del.onclick=()=>{loops.splice(i,1); renderLayers();};
+    const edit=document.createElement('button'); edit.textContent='Edit';
+    if(lp.steps.length!==STEPS || lp.recording){ edit.disabled=true; edit.title='Multi-bar take — re-record or edit as a scriptlet'; }
+    else { edit.title='Open this part in the Note Grid to edit its notes';
+      if(lp.grid && lp.gid===activeGridId) edit.classList.add('on-edit');
+      edit.onclick=()=>{ if(lp.gid==null) lp.gid=++gridCounter; lp.grid=true; activeGridId=lp.gid; buildNoteGrid(); renderLayers(); if(noteSeq) noteSeq.scrollIntoView({block:'nearest'}); }; }
     if(anySolo ? !lp.solo : lp.mute) d.classList.add('silenced');
-    d.appendChild(inst); d.appendChild(spd); d.appendChild(solo); d.appendChild(mute); d.appendChild(del); layersEl.appendChild(d);
+    d.appendChild(edit); d.appendChild(inst); d.appendChild(spd); d.appendChild(solo); d.appendChild(mute); d.appendChild(del); layersEl.appendChild(d);
   });
+  if(typeof refreshAddPat==='function') refreshAddPat();
 }
 
 /* ---------- Controls ---------- */
@@ -1630,7 +1639,12 @@ const nowPlaying=document.getElementById('nowPlaying'), songLen=document.getElem
 const playSongBtnEl=document.getElementById('playSongBtn'), loopSongEl=document.getElementById('loopSong');
 function refreshAddPat(){
   addPatSel.innerHTML=''; patterns.forEach((p,i)=>{const o=document.createElement('option');o.value=i;o.textContent='Part '+p.name;addPatSel.appendChild(o);});
-  const bp=document.getElementById('bouncePatSel'); if(bp){ bp.innerHTML=''; patterns.forEach((p,i)=>{const o=document.createElement('option');o.value=i;o.textContent='Part '+p.name;bp.appendChild(o);}); }
+  const bp=document.getElementById('bouncePatSel');
+  if(bp){ const keep=bp.value; bp.innerHTML='';
+    patterns.forEach((p,i)=>{const o=document.createElement('option');o.value='p'+i;o.textContent='Part '+p.name+' (full)';bp.appendChild(o);});
+    loops.forEach((lp,i)=>{ if(lp.recording) return; const o=document.createElement('option'); o.value='l'+i; o.textContent='   ↳ '+lp.name; bp.appendChild(o); });
+    if([...bp.options].some(o=>o.value===keep)) bp.value=keep;
+  }
 }
 function fmtTime(sec){ const m=Math.floor(sec/60), s=Math.round(sec%60); return m+':'+String(s).padStart(2,'0'); }
 function renderArrange(){
@@ -1874,7 +1888,7 @@ document.getElementById('openProj').onchange=async(e)=>{
 };
 
 /* ---------- Timeline / clip board ---------- */
-const PXPS=40, LANES=3, LANEH=46;               // pixels-per-second, lane count, lane height
+let PXPS=40; const LANES=4, LANEH=54;           // pixels-per-second (zoomable), lane count, lane height
 let clips=[], timeline=[], markers=[];          // bin clips, placed clips, section markers
 let clipCounter=0, tlCounter=0, markCounter=0;
 let tlPlaying=false, tlStartTime=0, tlSources=[], tlEndTimer=null;
@@ -1923,29 +1937,37 @@ const bouncePartBtn=document.getElementById('bouncePart');
 bouncePartBtn.onclick=async()=>{
   if(bouncing) return;
   initAudio(); if(AC.state==='suspended') await AC.resume();
-  const idx=+document.getElementById('bouncePatSel').value||0;
-  const pat=patterns[idx]; if(!pat) return;
-  const bars=+document.getElementById('recBars').value||2;   // uses the bar menu; Free -> 2 bars
+  const val=document.getElementById('bouncePatSel').value||'p'+curPat;
+  const bars=+document.getElementById('recBars').value||2;   // Free -> 2 bars
   bouncing=true; if(state.playing) stop();
   bouncePartBtn.textContent='…recording'; bouncePartBtn.classList.add('playing');
-  // start capture on the final mix
   const proc=AC.createScriptProcessor(4096,2,2); comp.connect(proc);
   const sink=AC.createGain(); sink.gain.value=0; proc.connect(sink).connect(AC.destination);
   const L=[],R=[]; proc.onaudioprocess=e=>{ L.push(new Float32Array(e.inputBuffer.getChannelData(0))); R.push(new Float32Array(e.inputBuffer.getChannelData(1))); };
-  // play just this part, in loop, for N bars
-  switchPat(idx); play(false);
+  let label='Part', savedSolo=null;
+  if(val[0]==='l'){                                            // bounce ONE synth layer (solo it)
+    const li=+val.slice(1), lp=loops[li];
+    label = lp ? lp.name : 'Layer';
+    savedSolo=loops.map(l=>l.solo); loops.forEach((l,k)=>l.solo=(k===li));
+    play(false);
+  } else {                                                     // bounce a whole Part
+    const idx=+val.slice(1); const pat=patterns[idx]||patterns[curPat]; label='Part '+pat.name;
+    switchPat(idx); play(false);
+  }
   await new Promise(r=>setTimeout(r, bars*barSec()*1000+90));
   stop();
+  if(savedSolo){ loops.forEach((l,k)=>l.solo=savedSolo[k]); renderLayers(); }
   try{ comp.disconnect(proc); }catch(e){} proc.onaudioprocess=null; try{ proc.disconnect(); }catch(e){}
   const fL=flattenChunks(L), fR=flattenChunks(R);
   if(fL.length){ const buf=AC.createBuffer(2,fL.length,AC.sampleRate); buf.copyToChannel(fL,0); buf.copyToChannel(fR,1);
-    const loopLen=bars*barSec();                               // exact musical length of the bounce
-    addClip('Part '+pat.name, buf, loopLen);
+    const loopLen=bars*barSec();
+    addClip(label, buf, loopLen);
     const c=clips[clips.length-1];
     timeline.push({id:++tlCounter, clipId:c.id, lane:0, start:timelineEnd(0), len:loopLen});
-    renderTL(); logMonitor("✓ Added Part "+pat.name+" to the timeline"); }
+    renderTL(); logMonitor("✓ Added "+label+" to the timeline"); }
   bouncing=false; bouncePartBtn.textContent='＋ Add part'; bouncePartBtn.classList.remove('playing');
 };
+document.getElementById('tlZoom').oninput=e=>{ PXPS=+e.target.value; renderTL(); };
 // where the next clip should drop on a lane (end of what's already there)
 function timelineEnd(lane){ let e=0; for(const t of timeline){ if(t.lane===lane){ const c=clipById(t.clipId); if(c) e=Math.max(e, t.start+(t.len||clipUnit(c))); } } return e; }
 document.getElementById('clipFile').onchange=async(e)=>{
